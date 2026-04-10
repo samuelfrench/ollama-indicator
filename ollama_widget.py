@@ -121,6 +121,7 @@ class TaskInfo:
     task_id: str = ""
     project: str = ""
     status: str = ""
+    prompt: str = ""
     submitted_at: str = ""
     completed_at: str = ""
 
@@ -261,6 +262,7 @@ class TaskWorker(QThread):
                     task_id=item.get("task_id", ""),
                     project=item.get("project", ""),
                     status=item.get("status", ""),
+                    prompt=item.get("prompt", ""),
                     submitted_at=item.get("submitted_at", ""),
                     completed_at=item.get("completed_at", ""),
                 ))
@@ -513,10 +515,10 @@ class GpuRow(QWidget):
 
 
 class TasksSection(QWidget):
-    """Collapsible section showing clawd-bot Ollama tasks."""
+    """Collapsible section showing clawd-bot Ollama tasks with prompt text."""
 
     _COLLAPSED_H = 22
-    _ROW_H = 20
+    _ROW_H = 36  # taller rows to fit prompt text
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -525,16 +527,19 @@ class TasksSection(QWidget):
         self.setFixedHeight(self._COLLAPSED_H)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
+    def _content_height(self) -> int:
+        return self._COLLAPSED_H + self._ROW_H * min(len(self._tasks), 10)
+
     def set_data(self, tasks: list[TaskInfo]):
         self._tasks = tasks
         if self._expanded:
-            self.setFixedHeight(self._COLLAPSED_H + self._ROW_H * min(len(tasks), 10))
+            self.setFixedHeight(self._content_height())
         self.update()
 
     def mousePressEvent(self, event):
         self._expanded = not self._expanded
         if self._expanded and self._tasks:
-            self.setFixedHeight(self._COLLAPSED_H + self._ROW_H * min(len(self._tasks), 10))
+            self.setFixedHeight(self._content_height())
         else:
             self.setFixedHeight(self._COLLAPSED_H)
         parent = self.parent()
@@ -544,6 +549,23 @@ class TasksSection(QWidget):
                 break
             parent = parent.parent() if hasattr(parent, "parent") else None
         event.accept()
+
+    def _truncate_prompt(self, prompt: str, fm, max_w: int) -> str:
+        """Truncate prompt to fit within max_w pixels."""
+        if not prompt:
+            return ""
+        # Strip common autonomous preamble
+        for prefix in ("You are an autonomous agent working toward this goal: ",):
+            if prompt.startswith(prefix):
+                prompt = prompt[len(prefix):]
+                break
+        # Single line, truncate to pixel width
+        prompt = prompt.replace("\n", " ").strip()
+        if fm.horizontalAdvance(prompt) <= max_w:
+            return prompt
+        while prompt and fm.horizontalAdvance(prompt + "\u2026") > max_w:
+            prompt = prompt[:-1]
+        return prompt.rstrip() + "\u2026"
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -575,24 +597,33 @@ class TasksSection(QWidget):
         }
 
         for i, task in enumerate(self._tasks[:10]):
-            row_y = self._COLLAPSED_H + self._ROW_H * i + 14
+            base_y = self._COLLAPSED_H + self._ROW_H * i
 
-            # Project name
+            # Line 1: project + status + age
+            line1_y = base_y + 12
             p.setPen(QColor(180, 180, 200))
-            p.drawText(8, row_y, task.project)
+            p.drawText(8, line1_y, task.project)
 
-            # Status badge
             color = STATUS_COLORS.get(task.status, QColor(100, 100, 120))
             p.setPen(color)
-            status_text = task.status
-            status_x = 120
-            p.drawText(status_x, row_y, status_text)
+            p.drawText(120, line1_y, task.status)
 
-            # Age
             age = task.age_str()
             if age:
                 p.setPen(QColor(100, 100, 120))
-                p.drawText(w - fm.horizontalAdvance(age) - 8, row_y, age)
+                p.drawText(w - fm.horizontalAdvance(age) - 8, line1_y, age)
+
+            # Line 2: truncated prompt
+            line2_y = base_y + 24
+            small_font = QFont("sans-serif", 7)
+            p.setFont(small_font)
+            sfm = p.fontMetrics()
+            prompt_text = self._truncate_prompt(task.prompt, sfm, w - 16)
+            p.setPen(QColor(130, 130, 150))
+            p.drawText(8, line2_y, prompt_text)
+
+            # Restore font for next row
+            p.setFont(font)
 
         p.end()
 
